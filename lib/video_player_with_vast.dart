@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
+import 'package:chewie/chewie.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
 import 'package:url_launcher/url_launcher.dart';
@@ -27,12 +28,12 @@ class CustomVideoPlayer extends StatefulWidget {
 
 class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   late VideoPlayerController _mainController;
+  ChewieController? _chewieController; // Chewie controller for enhanced UI
   VideoPlayerController? _adController;
   bool _isPlayingAd = false;
   bool _isMidRollPlayed = false;
   bool _isMainControllerInitialized = false;
   bool _isAdControllerInitialized = false;
-  bool _isControlsVisible = false;
   bool _isSkipVisible = false;
   String? _adClickThroughUrl;
   int _skipTime = 5; // Number of seconds before "Skip Ad" is shown
@@ -51,6 +52,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   void dispose() {
     _mainController.dispose();
     _adController?.dispose();
+    _chewieController?.dispose(); // Dispose of Chewie controller
     super.dispose();
   }
 
@@ -58,6 +60,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     _mainController = VideoPlayerController.network(widget.videoUrl)
       ..initialize().then((_) {
         if (mounted) {
+          _createChewieController();
           setState(() {
             _isMainControllerInitialized = true;
           });
@@ -66,6 +69,27 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
         _mainController.addListener(_checkMidRollAd);
         _mainController.addListener(_checkPostRollAd);
       });
+  }
+
+  // Initialize Chewie with the main controller
+  void _createChewieController() {
+    _chewieController = ChewieController(
+      videoPlayerController: _mainController,
+      autoPlay: true,
+      looping: false,
+      showControls: true,
+      allowMuting: true,
+      allowFullScreen: true,
+      materialProgressColors: ChewieProgressColors(
+        playedColor: Colors.red,
+        handleColor: Colors.red,
+        backgroundColor: Colors.grey,
+        bufferedColor: Colors.lightGreen,
+      ),
+      placeholder: Container(
+        color: Colors.black,
+      ),
+    );
   }
 
   Future<void> playPrerollAd() async {
@@ -95,7 +119,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     if (adUrl != null) {
       _mainController.pause();
       playAd(adUrl, () {
-        print('Postroll ad finished');
         _mainController.play(); // Continue main video after postroll
       });
     }
@@ -124,9 +147,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
               _isAdControllerInitialized = false;
               _isPlayingAd = false;
             });
-          }
-          if (_adController!.value.hasError) {
-            print("Ad player error: ${_adController!.value.errorDescription}");
           }
         });
       });
@@ -163,17 +183,21 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   }
 
   void _skipAd() {
-    // Skip the ad and continue the main video
+    // Check if the ad controller is initialized before disposing
     if (_adController != null) {
-      _adController!
-          .dispose(); // Dispose the ad controller after skipping the ad
+      _adController!.dispose(); // Dispose the ad controller if it's initialized
       _adController = null; // Set it to null to avoid reuse
-      setState(() {
-        _isSkipVisible = false; // Hide the skip button
-        _isPlayingAd = false; // No longer playing an ad
-        _isAdControllerInitialized = false;
-      });
-      _mainController.play(); // Resume main video after skipping the ad
+    }
+
+    setState(() {
+      _isSkipVisible = false; // Hide the skip button
+      _isPlayingAd = false; // No longer playing an ad
+      _isAdControllerInitialized = false;
+    });
+
+    // Ensure the main video controller resumes playing after skipping the ad
+    if (_mainController.value.isInitialized) {
+      _mainController.play();
     }
   }
 
@@ -191,12 +215,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     }
   }
 
-  void _toggleControls() {
-    setState(() {
-      _isControlsVisible = !_isControlsVisible;
-    });
-  }
-
   void _onAdClick() async {
     if (_adClickThroughUrl != null && await canLaunch(_adClickThroughUrl!)) {
       await launch(_adClickThroughUrl!,
@@ -209,92 +227,35 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: _toggleControls,
       child: Center(
-        child: _isMainControllerInitialized || _isAdControllerInitialized
+        child: _isMainControllerInitialized ||
+                (_isAdControllerInitialized && _adController != null)
             ? Stack(
                 children: [
                   AspectRatio(
-                    aspectRatio: _isPlayingAd
+                    aspectRatio: _isPlayingAd && _adController != null
                         ? _adController!.value.aspectRatio
                         : _mainController.value.aspectRatio,
-                    child: GestureDetector(
-                      onTap:
-                          _isPlayingAd ? _onAdClick : null, // Handle ad click
-                      child: VideoPlayer(
-                          _isPlayingAd ? _adController! : _mainController),
-                    ),
+                    child: _isPlayingAd && _adController != null
+                        ? VideoPlayer(_adController!)
+                        : Chewie(controller: _chewieController!),
                   ),
-                  if (_isSkipVisible && _isPlayingAd)
+                  if (_isSkipVisible && _isPlayingAd && _adController != null)
                     Positioned(
                       top: 10,
                       right: 10,
                       child: ElevatedButton(
                         onPressed: _skipAd,
                         style: ElevatedButton.styleFrom(
-                          primary: Colors.white
-                              .withOpacity(0.7), // Transparent white
-                          onPrimary: Colors.black, // Text color
+                          primary: Colors.white.withOpacity(0.7),
+                          onPrimary: Colors.black,
                         ),
                         child: Text('Skip Ad'),
                       ),
                     ),
-                  if (_isControlsVisible) ...[
-                    _buildControlsOverlay(),
-                  ],
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: VideoProgressIndicator(
-                      _isPlayingAd ? _adController! : _mainController,
-                      allowScrubbing: true,
-                      colors: VideoProgressColors(
-                        playedColor: Colors.red,
-                        backgroundColor: Colors.grey.withOpacity(0.5),
-                      ),
-                    ),
-                  ),
                 ],
               )
             : CircularProgressIndicator(),
-      ),
-    );
-  }
-
-  Widget _buildControlsOverlay() {
-    return Container(
-      color: Colors.black.withOpacity(0.3),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          IconButton(
-            icon: Icon(
-              _isPlayingAd
-                  ? _adController!.value.isPlaying
-                      ? Icons.pause
-                      : Icons.play_arrow
-                  : _mainController.value.isPlaying
-                      ? Icons.pause
-                      : Icons.play_arrow,
-              color: Colors.white,
-              size: 48.0,
-            ),
-            onPressed: () {
-              setState(() {
-                if (_isPlayingAd) {
-                  _adController!.value.isPlaying
-                      ? _adController!.pause()
-                      : _adController!.play();
-                } else {
-                  _mainController.value.isPlaying
-                      ? _mainController.pause()
-                      : _mainController.play();
-                }
-              });
-            },
-          ),
-        ],
       ),
     );
   }
