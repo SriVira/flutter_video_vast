@@ -1,9 +1,9 @@
-import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
-import 'package:url_launcher/url_launcher.dart';
 
 class CustomVideoPlayer extends StatefulWidget {
   final String videoUrl;
@@ -13,17 +13,18 @@ class CustomVideoPlayer extends StatefulWidget {
   final String vastTagPostroll;
   final int midRollDuration;
 
-  CustomVideoPlayer({
+  const CustomVideoPlayer({
+    super.key,
     required this.videoUrl,
     this.vastEnabled = false, // VAST ads disabled by default
     required this.vastTagPreroll,
     required this.vastTagMidroll,
     required this.vastTagPostroll,
-    this.midRollDuration = 0,
+    this.midRollDuration = 30,
   });
 
   @override
-  _CustomVideoPlayerState createState() => _CustomVideoPlayerState();
+  State<CustomVideoPlayer> createState() => _CustomVideoPlayerState();
 }
 
 class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
@@ -57,18 +58,19 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   }
 
   void _initializeMainVideo() {
-    _mainController = VideoPlayerController.network(widget.videoUrl)
-      ..initialize().then((_) {
-        if (mounted) {
-          _createChewieController();
-          setState(() {
-            _isMainControllerInitialized = true;
+    _mainController =
+        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl))
+          ..initialize().then((_) {
+            if (mounted) {
+              _createChewieController();
+              setState(() {
+                _isMainControllerInitialized = true;
+              });
+            }
+            _mainController.play();
+            _mainController.addListener(_checkMidRollAd);
+            _mainController.addListener(_checkPostRollAd);
           });
-        }
-        _mainController.play();
-        _mainController.addListener(_checkMidRollAd);
-        _mainController.addListener(_checkPostRollAd);
-      });
   }
 
   // Initialize Chewie with the main controller
@@ -129,7 +131,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
       _adController!.dispose(); // Dispose previous ad controller if exists
     }
 
-    _adController = VideoPlayerController.network(adUrl)
+    _adController = VideoPlayerController.networkUrl(Uri.parse(adUrl))
       ..initialize().then((_) {
         if (mounted) {
           setState(() {
@@ -159,6 +161,16 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
         final document = xml.XmlDocument.parse(response.body);
         final mediaFiles = document.findAllElements('MediaFile');
         final clickThrough = document.findAllElements('ClickThrough');
+
+        final linearAd = document.findAllElements('Linear').first;
+
+        // Fetch skipoffset attribute
+        final skipOffset = linearAd.getAttribute('skipoffset');
+
+        if (skipOffset != null) {
+          _skipTime = _convertTimeToSeconds(skipOffset);
+        }
+
         if (clickThrough.isNotEmpty) {
           _adClickThroughUrl = clickThrough.first.text.trim();
         }
@@ -172,6 +184,18 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     return null;
   }
 
+  int _convertTimeToSeconds(String time) {
+    // Split time string by ":"
+    final timeParts = time.split(':').map(int.parse).toList();
+
+    // Calculate total seconds (HH:MM:SS)
+    int hours = timeParts.length == 3 ? timeParts[0] : 0;
+    int minutes = timeParts.length >= 2 ? timeParts[timeParts.length - 2] : 0;
+    int seconds = timeParts.isNotEmpty ? timeParts[timeParts.length - 1] : 0;
+
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
   void _startSkipTimer() {
     Future.delayed(Duration(seconds: _skipTime), () {
       if (mounted) {
@@ -183,6 +207,7 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
   }
 
   void _skipAd() {
+    _initializeMainVideo();
     // Check if the ad controller is initialized before disposing
     if (_adController != null) {
       _adController!.dispose(); // Dispose the ad controller if it's initialized
@@ -215,12 +240,15 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
     }
   }
 
-  void _onAdClick() async {
-    if (_adClickThroughUrl != null && await canLaunch(_adClickThroughUrl!)) {
-      await launch(_adClickThroughUrl!,
-          forceSafariVC: false, forceWebView: false);
-    } else {
-      print('Could not launch the ad click-through URL');
+  Future<void> _onAdClick() async {
+    try {
+      if (_adClickThroughUrl != null) {
+        await launchUrl(Uri.parse(_adClickThroughUrl!));
+      } else {
+        print('Could not launch the ad click-through URL');
+      }
+    } on Exception catch (e) {
+      debugPrint("231->$e");
     }
   }
 
@@ -237,7 +265,11 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
                         ? _adController!.value.aspectRatio
                         : _mainController.value.aspectRatio,
                     child: _isPlayingAd && _adController != null
-                        ? VideoPlayer(_adController!)
+                        ? GestureDetector(
+                            onTap: () async {
+                              await _onAdClick();
+                            },
+                            child: VideoPlayer(_adController!))
                         : Chewie(controller: _chewieController!),
                   ),
                   if (_isSkipVisible && _isPlayingAd && _adController != null)
@@ -247,15 +279,15 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
                       child: ElevatedButton(
                         onPressed: _skipAd,
                         style: ElevatedButton.styleFrom(
-                          primary: Colors.white.withOpacity(0.7),
-                          onPrimary: Colors.black,
+                          foregroundColor: Colors.black,
+                          backgroundColor: Colors.white.withOpacity(0.7),
                         ),
-                        child: Text('Skip Ad'),
+                        child: const Text('Skip Ad'),
                       ),
                     ),
                 ],
               )
-            : CircularProgressIndicator(),
+            : const CircularProgressIndicator(),
       ),
     );
   }
